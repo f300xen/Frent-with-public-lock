@@ -18,6 +18,9 @@ public readonly struct WorldLock : IDisposable
 		_world.EnterDisallowState();
 	}
 
+	/// <summary>
+	/// Disposes the WorldLock.
+	/// </summary>
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public void Dispose()
 	{

@@ -1,7 +1,6 @@
 ﻿using Frent.Core;
 using Frent.Core.Structures;
 using Frent.Updating;
-using System;
 using System.Runtime.CompilerServices;
 
 namespace Frent;
@@ -48,7 +47,7 @@ public readonly ref struct EntityAccessor
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public bool Tagged<T>()
 	{
-		return Tagged(Tag<T>.ID);
+		return Tagged(Frent.Core.Tag<T>.ID);
 	}
 
 	/// <summary>
@@ -61,6 +60,65 @@ public readonly ref struct EntityAccessor
 	public bool Tagged(TagID tagID)
 	{
 		return _location.Archetype.HasTag(tagID);
+	}
+
+	/// <summary>
+	/// Adds a tag to the entity by queuing a command in the world's command buffer.
+	/// This operation is faster than `Entity.Tag` because it skips the initial entity lookup.
+	/// </summary>
+	/// <remarks>
+	/// The change is deferred and will be applied at the next update sync point.
+	/// </remarks>
+	/// <typeparam name="T">The type of the tag to add.</typeparam>
+	/// <param name="entity">The entity to tag.</param>
+	/// <param name="world">The world the entity belongs to.</param>
+	/// <returns>false if the entity already has the tag, true if the tag command was successfully queued.</returns>
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	public bool Tag<T>(Entity entity, World world)
+	{
+		// Corrected: Use the fully qualified name to resolve ambiguity.
+		return Tag(Frent.Core.Tag<T>.ID, entity, world);
+	}
+	/// <summary>
+	/// Adds a tag to the entity by queuing a command in the world's command buffer.
+	/// This operation is faster than `Entity.Tag` because it skips the initial entity lookup.
+	/// </summary>
+	/// <remarks>
+	/// The change is deferred and will be applied at the next update sync point.
+	/// Prefer the generic <see cref="Tag{T}(Entity, World)"/> or <see cref="Tag(TagID, Entity, World)"/> overloads for better performance.
+	/// </remarks>
+	/// <param name="type">The <see cref="Type"/> representing the tag to add.</param>
+	/// <param name="entity">The entity to tag.</param>
+	/// <param name="world">The world the entity belongs to.</param>
+	/// <returns>false if the entity already has the tag, true if the tag command was successfully queued.</returns>
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	public bool Tag(Type type, Entity entity, World world)
+	{
+		return Tag(Frent.Core.Tag.GetTagID(type), entity, world);
+	}
+
+
+	/// <summary>
+	/// Adds a tag to the entity by queuing a command in the world's command buffer.
+	/// This operation is faster than `Entity.Tag` because it skips the initial entity lookup.
+	/// </summary>
+	/// <remarks>
+	/// The change is deferred and will be applied at the next update sync point.
+	/// </remarks>
+	/// <param name="tagID">The ID of the tag to add.</param>
+	/// <param name="entity">The entity to tag.</param>
+	/// <param name="world">The world the entity belongs to.</param>
+	/// <returns>false if the entity already has the tag, true if the tag command was successfully queued.</returns>
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	public bool Tag(TagID tagID, Entity entity, World world)
+	{
+		if (_location.Archetype.HasTag(tagID))
+			return false;
+
+		// Corrected: Use the "Tag" method on the command buffer.
+		world.WorldUpdateCommandBuffer.Tag(entity, tagID);
+
+		return true;
 	}
 
 	/// <summary>

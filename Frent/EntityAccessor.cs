@@ -34,10 +34,33 @@ public readonly ref struct EntityAccessor
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public bool Has<T>()
 	{
-		// No AssertIsAlive call here. We operate directly on the cached location.
-		// Assumes GetComponentIndex is a valid method on Archetype.
-		// If not, use the GlobalWorldTables lookup like in TryGet.
 		return _location.Archetype.GetComponentIndex<T>() != 0;
+	}
+
+	// --- NEW METHODS ADDED HERE ---
+
+	/// <summary>
+	/// Checks if the entity has a specific tag of type T.
+	/// This operation is faster than `Entity.Tagged` because it skips the initial entity lookup.
+	/// </summary>
+	/// <typeparam name="T">The type of the tag to check for.</typeparam>
+	/// <returns>true if the entity has the tag; otherwise, false.</returns>
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	public bool Tagged<T>()
+	{
+		return Tagged(Tag<T>.ID);
+	}
+
+	/// <summary>
+	/// Checks if the entity has a specific tag.
+	/// This operation is faster than `Entity.Tagged` because it skips the initial entity lookup.
+	/// </summary>
+	/// <param name="tagID">The ID of the tag to check for.</param>
+	/// <returns>true if the entity has the tag; otherwise, false.</returns>
+	[MethodImpl(MethodImplOptions.AggressiveInlining)]
+	public bool Tagged(TagID tagID)
+	{
+		return _location.Archetype.HasTag(tagID);
 	}
 
 	/// <summary>
@@ -47,9 +70,7 @@ public readonly ref struct EntityAccessor
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public ref T Get<T>()
 	{
-		// No AssertIsAlive call here.
 		int compIndex = _location.Archetype.GetComponentIndex<T>();
-		// The following lines are based on the implementation of your Entity.Get<T>()
 		ComponentStorageRecord storage = _location.Archetype.Components.UnsafeArrayIndex(compIndex);
 		return ref storage.UnsafeIndex<T>(_location.Index);
 	}
@@ -60,8 +81,6 @@ public readonly ref struct EntityAccessor
 	/// </summary>
 	public bool TryGet<T>(out Ref<T> value)
 	{
-		// This logic is adapted from the TryGetCore method, but it uses the
-		// pre-fetched _location, avoiding a redundant entity lookup.
 		int compIndex = GlobalWorldTables.ComponentIndex(_location.ArchetypeID, Component<T>.ID);
 
 		if (compIndex == 0)
@@ -70,7 +89,6 @@ public readonly ref struct EntityAccessor
 			return false;
 		}
 
-		// The rest of the logic mirrors TryGetCore
 		T[] storage = UnsafeExtensions.UnsafeCast<T[]>(
 			_location.Archetype.Components.UnsafeArrayIndex(compIndex).Buffer);
 

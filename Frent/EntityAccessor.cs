@@ -76,7 +76,6 @@ public readonly ref struct EntityAccessor
 	[MethodImpl(MethodImplOptions.AggressiveInlining)]
 	public bool Tag<T>(Entity entity, World world)
 	{
-		// Corrected: Use the fully qualified name to resolve ambiguity.
 		return Tag(Frent.Core.Tag<T>.ID, entity, world);
 	}
 	/// <summary>
@@ -85,7 +84,6 @@ public readonly ref struct EntityAccessor
 	/// </summary>
 	/// <remarks>
 	/// The change is deferred and will be applied at the next update sync point.
-	/// Prefer the generic <see cref="Tag{T}(Entity, World)"/> or <see cref="Tag(TagID, Entity, World)"/> overloads for better performance.
 	/// </remarks>
 	/// <param name="type">The <see cref="Type"/> representing the tag to add.</param>
 	/// <param name="entity">The entity to tag.</param>
@@ -96,7 +94,6 @@ public readonly ref struct EntityAccessor
 	{
 		return Tag(Frent.Core.Tag.GetTagID(type), entity, world);
 	}
-
 
 	/// <summary>
 	/// Adds a tag to the entity by queuing a command in the world's command buffer.
@@ -115,7 +112,6 @@ public readonly ref struct EntityAccessor
 		if (_location.Archetype.HasTag(tagID))
 			return false;
 
-		// Corrected: Use the "Tag" method on the command buffer.
 		world.WorldUpdateCommandBuffer.Tag(entity, tagID);
 
 		return true;

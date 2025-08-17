@@ -11,15 +11,14 @@ namespace Frent.Core;
 /// </summary>
 public class CommandBuffer
 {
+    internal FastStack<EntityIDOnly> _deleteEntityBuffer = FastStack<EntityIDOnly>.Create(2);
     internal FastStack<AddComponent> _addComponentBuffer = FastStack<AddComponent>.Create(2);
     internal FastStack<DeleteComponent> _removeComponentBuffer = FastStack<DeleteComponent>.Create(2);
+    internal FastStack<CreateCommand> _createEntityBuffer = FastStack<CreateCommand>.Create(2);
     internal FastStack<TagCommand> _tagEntityBuffer = FastStack<TagCommand>.Create(2);
     internal FastStack<TagCommand> _detachTagEntityBuffer = FastStack<TagCommand>.Create(2);
-
-    internal FastStack<CreateCommand> _createEntityBuffer = FastStack<CreateCommand>.Create(2);
     internal FastStack<ComponentHandle> _createEntityComponents = FastStack<ComponentHandle>.Create(2);
     private readonly ComponentStorageRecord[] _componentRunnerBuffer = new ComponentStorageRecord[MemoryHelpers.MaxComponentCount];
-    internal FastStack<EntityIDOnly> _deleteEntityBuffer = FastStack<EntityIDOnly>.Create(2);
 
     internal World _world;
     //-1 indicates normal state
@@ -261,114 +260,126 @@ public class CommandBuffer
         return PlaybackInternal();
     }
 
-    internal bool PlaybackInternal()
-    {
-        bool hasItems = 
-            _createEntityBuffer.Count > 0 |
-            _deleteEntityBuffer.Count > 0 |
-            _addComponentBuffer.Count > 0 |
-            _removeComponentBuffer.Count > 0 |
-            _tagEntityBuffer.Count > 0 |
-            _detachTagEntityBuffer.Count > 0
-            ;
+	internal bool PlaybackInternal()
+	{
+		bool hasItems = _deleteEntityBuffer.Count > 0 | _createEntityBuffer.Count > 0 | _removeComponentBuffer.Count > 0 | _addComponentBuffer.Count > 0 | _tagEntityBuffer.Count > 0 | _detachTagEntityBuffer.Count > 0;
 
-        if (!hasItems)
-            return hasItems;
+		if (!hasItems)
+			return false;
 
-        while (_createEntityBuffer.TryPop(out CreateCommand createCommand))
-        {
-            Entity concrete = createCommand.Entity.ToEntity(_world);
-            ref EntityLocation lookup = ref _world.EntityTable.UnsafeIndexNoResize(concrete.EntityID);
+		while (_createEntityBuffer.TryPop(out CreateCommand createCommand))
+		{
+			Entity concrete = createCommand.Entity.ToEntity(_world);
+			ref EntityLocation lookup = ref _world.EntityTable.UnsafeIndexNoResize(concrete.EntityID);
 
-            if (createCommand.BufferLength > 0)
-            {
-                ArchetypeID id = _world.DefaultArchetype.ID;
-                Span<ComponentHandle> handles = _createEntityComponents.AsSpan().Slice(createCommand.BufferIndex, createCommand.BufferLength);
-                for (int i = 0; i < handles.Length; i++)
-                {
-                    id = _world.AddComponentLookup.FindAdjacentArchetypeID(handles[i].ComponentID, id, _world, ArchetypeEdgeType.AddComponent);
-                }
+			if (createCommand.BufferLength > 0)
+			{
+				ArchetypeID id = _world.DefaultArchetype.ID;
+				Span<ComponentHandle> handles = _createEntityComponents.AsSpan().Slice(createCommand.BufferIndex, createCommand.BufferLength);
+				for (int i = 0; i < handles.Length; i++)
+				{
+					id = _world.AddComponentLookup.FindAdjacentArchetypeID(handles[i].ComponentID, id, _world, ArchetypeEdgeType.AddComponent);
+				}
 
-                _world.MoveEntityToArchetypeAdd(concrete, ref lookup, out EntityLocation location, id.Archetype(_world)!);
-            }
+				_world.MoveEntityToArchetypeAdd(concrete, ref lookup, out EntityLocation location, id.Archetype(_world)!);
+			}
 
-            _world.InvokeEntityCreated(concrete);
-        }
+			_world.InvokeEntityCreated(concrete);
+		}
 
-        while (_deleteEntityBuffer.TryPop(out var item))
-        {
-            //double check that its alive
-            ref var record = ref _world.EntityTable[item.ID];
-            if (record.Version == item.Version)
-            {
-                _world.DeleteEntity(item.ToEntity(_world), ref record);
-            }
-        }
+		while (_deleteEntityBuffer.TryPop(out var item))
+		{
+			ref var record = ref _world.EntityTable[item.ID];
+			if (record.Version == item.Version)
+			{
+				_world.DeleteEntity(item.ToEntity(_world), ref record);
+			}
+		}
 
-        while (_removeComponentBuffer.TryPop(out var item))
-        {
-            var id = item.Entity.ID;
-            ref var record = ref _world.EntityTable[id];
-            if (record.Version == item.Entity.Version)
-            {
-                _world.RemoveComponent(item.Entity.ToEntity(_world), ref record, item.ComponentID);
-            }
-        }
+		while (_removeComponentBuffer.TryPop(out var item))
+		{
+			var id = item.Entity.ID;
+			ref var record = ref _world.EntityTable[id];
+			if (record.Version == item.Entity.Version)
+			{
+				if (record.Archetype.GetComponentIndex(item.ComponentID) == 0)
+				{
+					continue;
+				}
 
-        while (_addComponentBuffer.TryPop(out var command))
-        {
-            var id = command.Entity.ID;
-            ref var record = ref _world.EntityTable[id];
-            if (record.Version == command.Entity.Version)
-            {
-                Entity concrete = command.Entity.ToEntity(_world);
+				_world.RemoveComponent(item.Entity.ToEntity(_world), ref record, item.ComponentID);
+			}
+		}
 
-                _world.AddComponent(concrete, ref record, command.ComponentHandle.ComponentID, out var location, out var destination);
+		while (_addComponentBuffer.TryPop(out var command))
+		{
+			var id = command.Entity.ID;
+			ref var record = ref _world.EntityTable[id];
+			if (record.Version == command.Entity.Version)
+			{
+				if (record.Archetype.GetComponentIndex(command.ComponentHandle.ComponentID) != 0)
+				{
+					command.ComponentHandle.Dispose();
+					continue;
+				}
 
-                var runner = destination.Components[destination.GetComponentIndex(command.ComponentHandle.ComponentID)];
-                runner.PullComponentFrom(command.ComponentHandle.ParentTable, location.Index, command.ComponentHandle.Index);
+				Entity concrete = command.Entity.ToEntity(_world);
+				_world.AddComponent(concrete, ref record, command.ComponentHandle.ComponentID, out var location, out var destination);
 
-                if (record.HasEvent(EntityFlags.AddComp))
-                {
+				var runner = destination.Components[destination.GetComponentIndex(command.ComponentHandle.ComponentID)];
+				runner.PullComponentFrom(command.ComponentHandle.ParentTable, location.Index, command.ComponentHandle.Index);
+
+				if (record.HasEvent(EntityFlags.AddComp))
+				{
 #if NETSTANDARD2_1
                     var events = _world.EventLookup[command.Entity];
 #else
-                    ref var events = ref CollectionsMarshal.GetValueRefOrNullRef(_world.EventLookup, command.Entity);
+					ref var events = ref CollectionsMarshal.GetValueRefOrNullRef(_world.EventLookup, command.Entity);
 #endif
-                    events.Add.NormalEvent.Invoke(concrete, command.ComponentHandle.ComponentID);
-                    runner.InvokeGenericActionWith(events.Add.GenericEvent, concrete, location.Index);
-                }
+					events.Add.NormalEvent.Invoke(concrete, command.ComponentHandle.ComponentID);
+					runner.InvokeGenericActionWith(events.Add.GenericEvent, concrete, location.Index);
+				}
 
-                command.ComponentHandle.Dispose();
-            }
-        }
+				command.ComponentHandle.Dispose();
+			}
+		}
 
-        while (_tagEntityBuffer.TryPop(out var command))
-        {
-            ref var record = ref _world.EntityTable[command.Entity.ID];
-            if (record.Version == command.Entity.Version)
-            {
-                _world.MoveEntityToArchetypeIso(command.Entity.ToEntity(_world), ref record,
-                    Archetype.GetAdjacentArchetypeLookup(_world, ArchetypeEdgeKey.Tag(command.TagID, record.Archetype.ID, ArchetypeEdgeType.AddTag)));
-            }
-        }
+		while (_tagEntityBuffer.TryPop(out var command))
+		{
+			ref var record = ref _world.EntityTable[command.Entity.ID];
+			if (record.Version == command.Entity.Version)
+			{
+				if (record.Archetype.HasTag(command.TagID))
+				{
+					continue;
+				}
 
-        while (_detachTagEntityBuffer.TryPop(out var command))
-        {
-            ref var record = ref _world.EntityTable[command.Entity.ID];
-            if (record.Version == command.Entity.Version)
-            {
-                _world.MoveEntityToArchetypeIso(command.Entity.ToEntity(_world), ref record,
-                    Archetype.GetAdjacentArchetypeLookup(_world, ArchetypeEdgeKey.Tag(command.TagID, record.Archetype.ID, ArchetypeEdgeType.RemoveTag)));
-            }
-        }
+				_world.MoveEntityToArchetypeIso(command.Entity.ToEntity(_world), ref record,
+					Archetype.GetAdjacentArchetypeLookup(_world, ArchetypeEdgeKey.Tag(command.TagID, record.Archetype.ID, ArchetypeEdgeType.AddTag)));
+			}
+		}
 
-        _isInactive = true;
+		while (_detachTagEntityBuffer.TryPop(out var command))
+		{
+			ref var record = ref _world.EntityTable[command.Entity.ID];
+			if (record.Version == command.Entity.Version)
+			{
+				if (!record.Archetype.HasTag(command.TagID))
+				{
+					continue;
+				}
 
-        return hasItems;
-    }
+				_world.MoveEntityToArchetypeIso(command.Entity.ToEntity(_world), ref record,
+					Archetype.GetAdjacentArchetypeLookup(_world, ArchetypeEdgeKey.Tag(command.TagID, record.Archetype.ID, ArchetypeEdgeType.RemoveTag)));
+			}
+		}
 
-    private void AssertCreatingEntity()
+		_isInactive = true;
+
+		return hasItems;
+	}
+
+	private void AssertCreatingEntity()
     {
         if (_lastCreateEntityComponentsBufferIndex < 0)
         {

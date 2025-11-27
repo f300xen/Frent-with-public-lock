@@ -9,7 +9,11 @@ namespace Frent.Core;
 [DebuggerDisplay(AttributeHelpers.DebuggerDisplay)]
 public readonly struct ComponentID : ITypeID, IEquatable<ComponentID>
 {
-    internal ComponentID(ushort id) => RawIndex = id;
+    internal ComponentID(ushort id)
+    {
+        RawIndex = id;
+    }
+
     internal readonly ushort RawIndex;
 
     /// <summary>
@@ -19,6 +23,10 @@ public readonly struct ComponentID : ITypeID, IEquatable<ComponentID>
 
     ushort ITypeID.Value => RawIndex;
     internal readonly UpdateMethodData[] Methods => Component.ComponentTable[RawIndex].UpdateMethods;
+    internal readonly IDTypeFilter[] MethodFilters => Component.ComponentTable[RawIndex].UpdateMethodFilters;
+    internal readonly int SparseIndex => Component.ComponentTable[RawIndex].SparseComponentIndex;
+    internal readonly bool IsSparseComponent => SparseIndex != 0;
+    internal ref ComponentData Metadata => ref Component.ComponentTable[RawIndex];
 
     /// <summary>
     /// Checks if this <see cref="ComponentID"/> instance represents the same ID as <paramref name="other"/>.

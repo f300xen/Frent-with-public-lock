@@ -1,6 +1,8 @@
 ﻿using Apos.Shapes;
 using Frent.Core;
+using Frent.Marshalling;
 using Frent.Sample.Asteroids.Editor.UI;
+using Frent.Serialization;
 using Frent.Systems;
 using FrentSandbox;
 using ImGuiNET;
@@ -10,6 +12,7 @@ using Microsoft.Xna.Framework.Input;
 using System.Collections.Frozen;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.Json;
 
 namespace Frent.Sample.Asteroids;
 
@@ -143,6 +146,9 @@ public partial class AsteroidsGame : Game
         ]), default, new() { Radius = 25 });
         _player.Tag<Shootable>();
         _player.OnDelete += e => CreateNewPlayer();
+
+        _world.Query<EnemyController>()
+            .Delegate((ref EnemyController e) => e.Target = _player);
     }
 
     private void Window_ClientSizeChanged(object? sender, EventArgs e)
@@ -154,7 +160,7 @@ public partial class AsteroidsGame : Game
     int _enemyCount;
 
     protected override void Update(GameTime gameTime)
-    {   
+    {
         InputHelper.TickUpdate(IsActive);
         if (InputHelper.RisingEdge(Keys.Q))
             Paused = !Paused;
@@ -164,9 +170,24 @@ public partial class AsteroidsGame : Game
             _camera.Update();
         if(!Paused)
             _world.Update<TickAttribute>();
+
         if(_cameraController.TryGet(out Ref<CameraControl> cameraControl))
         {
             _camera.Position = -cameraControl.Value.Location;
+        }
+
+        if(InputHelper.RisingEdge(Keys.P))
+        {
+            MemoryStream memoryStream = new MemoryStream();
+
+            JsonWorldSerializer serializer = new(new(JsonSerializerOptions.Default)
+            {
+                IncludeFields = true,
+            });
+
+            serializer.Serialize(memoryStream, _world);
+
+            string json = Encoding.UTF8.GetString(memoryStream.ToArray());
         }
 
         if(!Paused && _enemyCount < 20 && Random.Shared.Next(60) == 0)
@@ -175,13 +196,15 @@ public partial class AsteroidsGame : Game
             int width = GraphicsDevice.Viewport.Width;
             int height = GraphicsDevice.Viewport.Height;
             var playerPos = _player.Get<Transform>();
+
             var e = _world.Create<Transform, Velocity, Polygon, CircleCollision, EnemyController>(
                 AsteroidsHelper.RandomDirection() * 2000 + playerPos,
                 default,
                 new Polygon(default, _polygons[Random.Shared.Next(_polygons.Length)]),
-                new() { Radius = 28 },
+                new() { Radius = 60 },
                 new(_player)
                 );
+
             e.Tag<Shootable>();
         }
 
@@ -199,7 +222,7 @@ public partial class AsteroidsGame : Game
                 if(entity1 != entity2)
                 {
                     if(CircleCollision.Intersects(
-                        trans1.Value, collision2.Value,
+                        trans1.Value, collision1.Value,
                         trans2.Value, collision2.Value))
                     {
                         collision2.Value.CollidesWith = entity1;

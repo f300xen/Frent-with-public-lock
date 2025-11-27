@@ -11,6 +11,8 @@ using System.Runtime.CompilerServices;
 using System.Collections.Immutable;
 using Frent.Core;
 using System.Runtime.InteropServices;
+using System.Text.Json.Serialization;
+using Frent.Serialization;
 
 namespace Frent.Sample.Asteroids;
 
@@ -26,7 +28,9 @@ internal struct DecayTimer(int frames) : IInitable, IComponent
     public void Update()
     {
         if (--Frames < 0)
+        {
             _self.Delete();
+        }
     }
 }
 
@@ -68,7 +72,7 @@ internal struct Velocity(float dx, float dy) : IComponent<Transform>
 }
 
 [Editor]
-internal struct Polygon(Vector2 origin, Vector2[] verticies, float thickness = 2) : IEnumerable<(Vector2 A, Vector2 B)>, IUniformComponent<ShapeBatch, Transform>
+internal struct Polygon(Vector2 origin, Vector2[] verticies, float thickness = 2) : IEnumerable<(Vector2 A, Vector2 B)>, IUniformComponent<ShapeBatch, Transform>, ISparseComponent
 {
     public float Thickness = thickness;
     public Vector2 Origin = origin;
@@ -130,7 +134,7 @@ internal struct Polygon(Vector2 origin, Vector2[] verticies, float thickness = 2
 }
 
 [Editor]
-internal struct Line : IUniformComponent<ShapeBatch, Transform>
+internal struct Line : IUniformComponent<ShapeBatch, Transform>, ISparseComponent
 {
     public float Thickness;
     public float Opacity;
@@ -145,7 +149,7 @@ internal struct Line : IUniformComponent<ShapeBatch, Transform>
 }
 
 [Editor]
-internal struct PlayerController : IUniformComponent<World, Transform, Velocity>, IInitable
+internal struct PlayerController : IUniformComponent<World, Transform, Velocity>, IInitable, ISparseComponent
 {
     private int _timeSinceShoot;
     private MouseState _pms;
@@ -245,7 +249,7 @@ internal struct FollowEntity(Entity toFollow, float smoothing = 0.02f) : ICompon
 }
 
 [Editor]
-internal struct CameraControl : IComponent<Transform>
+internal struct CameraControl : IComponent<Transform>, ISparseComponent
 {
     public Vector2 Location;
     [Tick]
@@ -298,6 +302,12 @@ internal struct CircleCollision : IComponentBase
         float radiiSum = a.Radius + b.Radius;
         return Vector2.DistanceSquared(aPos, bPos) <= radiiSum * radiiSum;
     }
+
+    //[Draw]
+    //public void Update(ShapeBatch sb, ref Transform arg)
+    //{
+    //    sb.DrawCircle(arg.XY, Radius, Color.Transparent, Color.Red);
+    //}
 }
 
 [Editor]
@@ -319,3 +329,14 @@ internal struct BulletBehavior(Entity entity) : IComponent<CircleCollision>
 
 internal struct Asteroid;
 internal struct Shootable;
+
+[JsonSourceGenerationOptions(IncludeFields = true)]
+[ComponentJsonSerializerContext]
+[JsonSerializable(typeof(BulletBehavior))]
+[JsonSerializable(typeof(CircleCollision))]
+[JsonSerializable(typeof(AngularVelocity))]
+[JsonSerializable(typeof(Triangle))]
+[JsonSerializable(typeof(CameraControl))]
+[JsonSerializable(typeof(FollowEntity))]
+[JsonSerializable(typeof(EnemyController))]
+internal partial class AssemblyContext : JsonSerializerContext;

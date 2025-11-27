@@ -1,5 +1,4 @@
-﻿using Frent.Buffers;
-using Frent.Collections;
+﻿using Frent.Collections;
 using Frent.Components;
 using Frent.Core;
 using Frent.Core.Events;
@@ -9,13 +8,24 @@ using Frent.Systems.Queries;
 using Frent.Updating;
 using System.Collections.Immutable;
 using System.Diagnostics;
-using System.Numerics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Security.AccessControl;
 
 [assembly: InternalsVisibleTo("Frent.Tests")]
 namespace Frent;
+
+/*
+ * Sparse set todo:
+ * [x] Track sparse set index
+ * [x] Bitset table for sparse set component set (limit to 256 sparse components?)
+ * [x] Get/Set/Has/ + other non mutating methods
+ * [x] Add/Remove
+ * [x] Updates
+ * [ ] Systems
+ * [x] Deferred Updates
+ * [x] Benchmarks
+ * [x] Fuzzer project
+ * [x] Tests for lifetime for sparse + archetypical & for all apis, create, create many, add, remove, tag, detach, delete, world dispose +
+ */
 
 /// <summary>
 /// A collection of entities that can be updated and queried.
@@ -26,18 +36,20 @@ public partial class World : IDisposable
     private static ushort _nextWorldID = 1;
     #endregion
 
-    //entityID -> entity metadata
+    //entity ID -> entity metadata
     internal Table<EntityLocation> EntityTable = new Table<EntityLocation>(256);
-    //archetype ID -> Archetype?
+
+    //archetype ID -> Archetype
     internal WorldArchetypeTableItem[] WorldArchetypeTable;
-    
+    internal ComponentSparseSetBase[] WorldSparseSetTable;
+
     internal struct WorldArchetypeTableItem(Archetype archetype, Archetype temp)
     {
         public Archetype Archetype = archetype;
         public Archetype DeferredCreationArchetype = temp;
     }
 
-    internal Dictionary<ArchetypeEdgeKey, Archetype> ArchetypeGraphEdges = [];
+    internal RefDictionary<ArchetypeEdgeKey, Archetype> ArchetypeGraphEdges = new();
 
     /// <summary>
     /// Points to the first element in the linked list of <see cref="EntityTable"/>.
@@ -47,11 +59,11 @@ public partial class World : IDisposable
 
     private int _freeListCount;
 
-    private Dictionary<Type, WorldUpdateFilter> _updatesByAttributes = [];
-    private Dictionary<ComponentID, SingleComponentUpdateFilter> _singleComponentUpdates = [];
+    private RefDictionary<Type, AttributeUpdateFilter> _updatesByAttributes = new();
+    private RefDictionary<ComponentID, SingleComponentUpdateFilter> _singleComponentUpdates = new();
     internal int NextEntityID;
 
-    internal readonly ushort ID;
+    internal readonly ushort WorldID;
     internal readonly Entity DefaultWorldEntity;
     private bool _isDisposed = false;
 
@@ -59,7 +71,7 @@ public partial class World : IDisposable
 
     internal void EnterWorldUpdateMethod()
     {
-        if(_worldUpdateMethodCalled)
+        if (_worldUpdateMethodCalled)
             FrentExceptions.Throw_InvalidOperationException("Nested World.Update calls are not supported!");
         _worldUpdateMethodCalled = true;
     }
@@ -102,6 +114,9 @@ public partial class World : IDisposable
     internal FastStack<ArchetypeDeferredUpdateRecord> DeferredCreationArchetypes = FastStack<ArchetypeDeferredUpdateRecord>.Create(4);
     private FastStack<ArchetypeDeferredUpdateRecord> _altDeferredCreationArchetypes = FastStack<ArchetypeDeferredUpdateRecord>.Create(4);
 
+    internal FastStack<int> DeferredCreationEntities = FastStack<int>.Create(4);
+    private FastStack<int> _altDeferredCreationEntities = FastStack<int>.Create(4);
+
     /// <summary>
     /// The current uniform provider used when updating components/queries with uniforms.
     /// </summary>
@@ -122,7 +137,7 @@ public partial class World : IDisposable
     /// </summary>
     public Config CurrentConfig { get; set; }
 
-    internal Dictionary<EntityIDOnly, EventRecord> EventLookup = [];
+    internal RefDictionary<EntityIDOnly, EventRecord> EventLookup = new();
     internal readonly Archetype DefaultArchetype;
 
     /// <summary>
@@ -218,14 +233,18 @@ public partial class World : IDisposable
     {
         CurrentConfig = config ?? Config.Singlethreaded;
         _uniformProvider = uniformProvider ?? NullUniformProvider.Instance;
-        ID = _nextWorldID++;
+        WorldID = _nextWorldID++;
 
-        GlobalWorldTables.Worlds[ID] = this;
+        GlobalWorldTables.Worlds[WorldID] = this;
 
         WorldArchetypeTable = new WorldArchetypeTableItem[GlobalWorldTables.ComponentTagLocationTable.Length];
+        WorldSparseSetTable = new ComponentSparseSetBase[Component.ComponentTableBySparseIndex.Count];
+
+        for (int i = 1; i < WorldSparseSetTable.Length; i++)
+            WorldSparseSetTable[i] = Component.ComponentTableBySparseIndex[i].Factory.CreateSparseSet();
 
         WorldUpdateCommandBuffer = new CommandBuffer(this);
-        DefaultWorldEntity = new Entity(ID, default, default);
+        DefaultWorldEntity = new Entity(WorldID, default, default);
         DefaultArchetype = Archetype.CreateOrGetExistingArchetype([], [], this, ImmutableArray<ComponentID>.Empty, ImmutableArray<TagID>.Empty);
     }
 
@@ -236,7 +255,9 @@ public partial class World : IDisposable
         slot.Index = entityLocation.Index;
         slot.Flags = entityLocation.Flags;
 
-        return new Entity(ID, slot.Version, entityId);
+        entityLocation.Archetype.ClearBitset(entityLocation.Index);
+
+        return new Entity(WorldID, slot.Version, entityId);
     }
 
     /// <summary>
@@ -246,25 +267,17 @@ public partial class World : IDisposable
     {
         EnterDisallowState();
         EnterWorldUpdateMethod();
+        AttributeUpdateFilter? appliesTo = default;
         try
         {
-            if (CurrentConfig.MultiThreadedUpdate)
-            {
-                throw new NotSupportedException();
-            }
-            else
-            {
-                foreach (var element in EnabledArchetypes.AsSpan())
-                {
-                    element.Archetype(this)!.Update(this);
-                }
-            }
+            appliesTo = _updatesByAttributes.GetValueRefOrAddDefault(typeof(void), out _) ??= new AttributeUpdateFilter(this, typeof(void), true);
+            appliesTo.Update();
         }
         finally
         {
             ExitWorldUpdateMethod();
-            ExitDisallowState(null, CurrentConfig.UpdateDeferredCreationEntities);
-        }   
+            ExitDisallowState(appliesTo, CurrentConfig.UpdateDeferredCreationEntities);
+        }
     }
 
     /// <summary>
@@ -281,11 +294,10 @@ public partial class World : IDisposable
     {
         EnterDisallowState();
         EnterWorldUpdateMethod();
-        WorldUpdateFilter? appliesTo = default;
+        AttributeUpdateFilter? appliesTo = default;
         try
         {
-            if (!_updatesByAttributes.TryGetValue(attributeType, out appliesTo))
-                _updatesByAttributes[attributeType] = appliesTo = new WorldUpdateFilter(this, attributeType);
+            appliesTo = _updatesByAttributes.GetValueRefOrAddDefault(attributeType, out _) ??= new AttributeUpdateFilter(this, attributeType, false);
             appliesTo.Update();
         }
         finally
@@ -307,14 +319,8 @@ public partial class World : IDisposable
 
         try
         {
-#if NETSTANDARD2_1
-        if(!_singleComponentUpdates.TryGetValue(componentType, out singleComponent))
-            _singleComponentUpdates[componentType] = singleComponent = new(this, componentType);
-#else
-            singleComponent = CollectionsMarshal.GetValueRefOrAddDefault(_singleComponentUpdates, componentType, out _) ??= new(this, componentType);
-#endif
-
-            singleComponent.Update();  
+            singleComponent = _singleComponentUpdates.GetValueRefOrAddDefault(componentType, out _) ??= new(this, componentType);
+            singleComponent.Update();
         }
         finally
         {
@@ -331,7 +337,7 @@ public partial class World : IDisposable
             qkvp.TryAttachArchetype(archetype);
         foreach (var fkvp in _updatesByAttributes)
             fkvp.Value.ArchetypeAdded(archetype);
-        foreach(var fkvp in _singleComponentUpdates)
+        foreach (var fkvp in _singleComponentUpdates)
             fkvp.Value.ArchetypeAdded(archetype);
     }
 
@@ -357,7 +363,7 @@ public partial class World : IDisposable
     internal Query BuildQuery<T>()
         where T : struct, IQueryBuilder
     {
-        ref Query query = ref QueryInfo<T>.Queries[ID];
+        ref Query query = ref QueryInfo<T>.Queries[WorldID];
         query ??= QueryInfo<T>.Build(this);
         return query;
     }
@@ -379,29 +385,31 @@ public partial class World : IDisposable
     internal void UpdateArchetypeTable(int newSize)
     {
         Debug.Assert(newSize > WorldArchetypeTable.Length);
+
         Array.Resize(ref WorldArchetypeTable, newSize);
 
-        //World world = GlobalWorldTables.Worlds[ID];
+        //World world = GlobalWorldTables.Worlds[WorldID];
     }
 
     internal void EnterDisallowState()
     {
-        if(Interlocked.Increment(ref _allowStructuralChanges) == 0)
+        if (Interlocked.Increment(ref _allowStructuralChanges) == 0)
         {
             Interlocked.Increment(ref _allowStructuralChanges);
         }
     }
-    
+
     const int DeferredEntityOperationRecursionLimit = 200;
 
     internal void ExitDisallowState(IComponentUpdateFilter? filterUsed, bool updateDeferredEntities = false)
     {
         if (Interlocked.Decrement(ref _allowStructuralChanges) == 0)
         {
-            if(DeferredCreationArchetypes.Count > 0)
+            if (DeferredCreationArchetypes.Count > 0)
             {
                 if (updateDeferredEntities)
                 {
+                    Debug.Assert(filterUsed is not null);
                     ResolveUpdateDeferredCreationEntities(filterUsed);
                 }
                 else
@@ -416,14 +424,15 @@ public partial class World : IDisposable
 
             int count = 0;
             while (WorldUpdateCommandBuffer.Playback())
-                if(++count > DeferredEntityOperationRecursionLimit)
+                if (++count > DeferredEntityOperationRecursionLimit)
                     FrentExceptions.Throw_InvalidOperationException("Deferred entity creation recursion limit exceeded! Are your component events creating command buffer items? (which create more command buffer items...)?");
         }
     }
 
-    private void ResolveUpdateDeferredCreationEntities(IComponentUpdateFilter? filterUsed)
+    private void ResolveUpdateDeferredCreationEntities(IComponentUpdateFilter filterUsed)
     {
         Span<ArchetypeDeferredUpdateRecord> resolveArchetypes = DeferredCreationArchetypes.AsSpan();
+        Span<int> resolveEntities = DeferredCreationEntities.AsSpan();
 
         Interlocked.Increment(ref _allowStructuralChanges);
 
@@ -434,21 +443,14 @@ public partial class World : IDisposable
                 archetype.ResolveDeferredEntityCreations(this, tmp);
 
             (_altDeferredCreationArchetypes, DeferredCreationArchetypes) = (DeferredCreationArchetypes, _altDeferredCreationArchetypes);
+            (_altDeferredCreationEntities, DeferredCreationEntities) = (DeferredCreationEntities, _altDeferredCreationEntities);
             DeferredCreationArchetypes.ClearWithoutClearingGCReferences();
+            DeferredCreationEntities.Clear();
 
-            if (filterUsed is not null)
-            {
-                filterUsed?.UpdateSubset(resolveArchetypes);
-            }
-            else
-            {
-                foreach (var (archetype, _, start) in resolveArchetypes)
-                {
-                    archetype.Update(this, start, archetype.EntityCount - start);
-                }
-            }
+            filterUsed.UpdateSubset(resolveArchetypes, resolveEntities);
 
             resolveArchetypes = DeferredCreationArchetypes.AsSpan();
+            resolveEntities = DeferredCreationEntities.AsSpan();
 
             if (++createRecursionCount > DeferredEntityOperationRecursionLimit)
             {
@@ -457,24 +459,23 @@ public partial class World : IDisposable
         }
 
         DeferredCreationArchetypes.ClearWithoutClearingGCReferences();
+        DeferredCreationEntities.Clear();
         Interlocked.Decrement(ref _allowStructuralChanges);
     }
 
-#if !NETSTANDARD2_1
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal ref EventRecord TryGetEventData(EntityLocation entityLocation, EntityIDOnly entity, EntityFlags eventType, out bool exists)
     {
-        if (entityLocation.HasEvent(eventType))
+        if (entityLocation.HasFlag(eventType))
         {
             exists = true;
-            return ref CollectionsMarshal.GetValueRefOrNullRef(EventLookup, entity);
+            return ref EventLookup.GetValueRefOrNullRef(entity);
         }
 
 
         exists = false;
         return ref Unsafe.NullRef<EventRecord>();
     }
-#endif
 
     internal bool AllowStructualChanges => _allowStructuralChanges == -1;
 
@@ -486,15 +487,27 @@ public partial class World : IDisposable
         if (_isDisposed)
             throw new InvalidOperationException("World is already disposed!");
 
-        GlobalWorldTables.Worlds[ID] = null!;
+        GlobalWorldTables.Worlds[WorldID] = null!;
 
         foreach (ref var item in WorldArchetypeTable.AsSpan())
         {
-            if(item.Archetype is not null)
+            if (item.Archetype is not null)
             {
                 item.Archetype.ReleaseArrays(false);
                 item.DeferredCreationArchetype.ReleaseArrays(true);
             }
+        }
+
+        Span<EntityLocation> tableItems = EntityTable.AsSpan();
+        for (int i = 0; i < tableItems.Length; i++)
+        {
+            ref EntityLocation item = ref tableItems[i];
+            if (item.Archetype is null)
+                continue;
+            if (!item.HasFlag(EntityFlags.HasSparseComponents))
+                continue;
+
+            CleanupSparseComponents(new Entity(WorldID, item.Version, i), ref item);
         }
 
         _sharedCountdown.Dispose();
@@ -508,35 +521,19 @@ public partial class World : IDisposable
     /// Creates an <see cref="Entity"/>.
     /// </summary>
     /// <param name="components">The components to use.</param>
+    /// <param name="tags">The tags to use.</param>
     /// <returns>The created entity.</returns>
-    public Entity CreateFromObjects(ReadOnlySpan<object> components)
+    public Entity CreateFromObjects(ReadOnlySpan<object> components, ReadOnlySpan<TagID> tags = default)
     {
         if (components.Length > MemoryHelpers.MaxComponentCount)
             throw new ArgumentException("Max 127 components on an entity", nameof(components));
 
-        Span<ComponentID> types = stackalloc ComponentID[components.Length];
+        Span<ComponentHandle> componentHandles = stackalloc ComponentHandle[components.Length];
 
-        for (int i = 0; i < components.Length; i++)
-            types[i] = Component.GetComponentID(components[i].GetType());
+        for (int i = 0; i < componentHandles.Length; i++)
+            componentHandles[i] = ComponentHandle.CreateFromBoxed(components[i]);
 
-        Archetype archetype = Archetype.CreateOrGetExistingArchetype(types!, [], this);
-
-        ref EntityIDOnly entityID = ref archetype.CreateEntityLocation(EntityFlags.None, out EntityLocation loc);
-        Entity entity = CreateEntityFromLocation(loc);
-        entityID.Init(entity);
-
-        Span<ComponentStorageRecord> archetypeComponents = archetype.Components.AsSpan();
-        for (int i = 1; i < archetypeComponents.Length; i++)
-        {
-            archetypeComponents[i].SetAt(null, components[i - 1], loc.Index);
-        }
-        for (int i = 1; i < archetypeComponents.Length; i++)
-        {
-            archetypeComponents[i].CallIniter(entity, loc.Index);
-        }
-
-        EntityCreatedEvent.Invoke(entity);
-        return entity;
+        return CreateFromHandles(componentHandles, tags);
     }
 
     /// <summary>
@@ -548,31 +545,107 @@ public partial class World : IDisposable
         if (componentHandles.Length > MemoryHelpers.MaxComponentCount)
             throw new ArgumentException("Max 127 components on an entity", nameof(componentHandles));
 
+        ref EntityLocation loc = ref FindNewEntityLocation(out int id);
+
+        return CreateFromHandlesCore(id, ref loc, componentHandles, tags);
+    }
+
+    internal Entity CreateFromHandlesCore(int id, ref EntityLocation eloc, ReadOnlySpan<ComponentHandle> componentHandles, ReadOnlySpan<TagID> tags = default)
+    {
         Span<ComponentID> componentIDs = stackalloc ComponentID[componentHandles.Length];
+        Span<int> sparseComponentIndicies = stackalloc int[componentHandles.Length];
+        bool hasSparseComponent = false;
+
+        int archetypeicalComponentIdsIndex = 0;
+        for (int i = 0; i < componentHandles.Length; i++)
+        {
+            ComponentID compId = componentHandles[i].ComponentID;
+            int sparseIndex = componentHandles[i].ComponentID.SparseIndex;
+            if (sparseIndex == 0)
+            {
+                componentIDs[archetypeicalComponentIdsIndex++] = compId;
+            }
+            else
+            {
+                sparseComponentIndicies[i] = sparseIndex;
+                hasSparseComponent = true;
+            }
+        }
+
+        WorldArchetypeTableItem archetypes = Archetype.CreateOrGetExistingArchetypes(componentIDs.Slice(0, archetypeicalComponentIdsIndex), tags, this);
+
+        ref var archetypeEntityRecord = ref Unsafe.NullRef<EntityIDOnly>();
+
+        Archetype inserted;
+        if (AllowStructualChanges)
+        {
+            inserted = archetypes.Archetype;
+            archetypeEntityRecord = ref archetypes.Archetype.CreateEntityLocation(EntityFlags.None, out eloc);
+        }
+        else
+        {
+            // we don't need to manually set flags, they are already zeroed
+            archetypeEntityRecord = ref archetypes.Archetype.CreateDeferredEntityLocation(this, archetypes.DeferredCreationArchetype,
+                ref eloc,
+                out _,
+                out inserted);
+            DeferredCreationEntities.Push(id);
+        }
+
+        archetypeEntityRecord.Version = eloc.Version;
+        archetypeEntityRecord.ID = id;
+
+        #region Set Components & Bits
+        ref Bitset bitset = ref Unsafe.NullRef<Bitset>();
+
+        if (hasSparseComponent)
+        {
+            eloc.Flags |= EntityFlags.HasSparseComponents;
+            bitset = ref inserted.GetBitset(eloc.Index);
+            bitset = default;
+        }
+        else
+        {
+            inserted.ClearBitset(eloc.Index);
+        }
 
         for (int i = 0; i < componentHandles.Length; i++)
-            componentIDs[i] = componentHandles[i].ComponentID;
-
-        Archetype archetype = Archetype.CreateOrGetExistingArchetype(componentIDs, tags, this);
-
-        ref EntityIDOnly entityID = ref archetype.CreateEntityLocation(EntityFlags.None, out EntityLocation entityLocation);
-
-        Entity entity = CreateEntityFromLocation(entityLocation);
-        entityID.Init(entity);
-
-        Span<ComponentStorageRecord> archetypeComponents = archetype.Components.AsSpan();
-        for (int i = 1; i < archetypeComponents.Length; i++)
         {
-            archetypeComponents[i].SetAt(null, componentHandles[i - 1], entityLocation.Index);
+            int sparseIndex = sparseComponentIndicies[i];
+            if (sparseIndex == 0)
+            {
+                archetypes.Archetype.GetComponentStorage(componentHandles[i].ComponentID)
+                    .SetAt(null, componentHandles[i], eloc.Index);
+            }
+            else
+            {
+                WorldSparseSetTable[sparseIndex].AddOrSet(id, componentHandles[i]);
+                bitset.Set(sparseIndex);
+            }
         }
-        for (int i = 1; i < archetypeComponents.Length; i++)
+        #endregion
+
+        Entity concreteEntity = new Entity(WorldID, eloc.Version, id);
+
+        #region Initer
+        for (int i = 0; i < componentHandles.Length; i++)
         {
-            archetypeComponents[i].CallIniter(entity, entityLocation.Index);
+            int sparseIndex = sparseComponentIndicies[i];
+            if (sparseIndex == 0)
+            {
+                archetypes.Archetype.GetComponentStorage(componentHandles[i].ComponentID)
+                    .CallIniter(concreteEntity, eloc.Index);
+            }
+            else
+            {
+                WorldSparseSetTable[sparseIndex].Init(concreteEntity);
+            }
         }
+        #endregion Initer
 
-        EntityCreatedEvent.Invoke(entity);
+        EntityCreatedEvent.Invoke(concreteEntity);
 
-        return entity;
+        return concreteEntity;
     }
 
     /// <summary>
@@ -588,9 +661,9 @@ public partial class World : IDisposable
 
     internal Entity CreateEntityWithoutEvent()
     {
-        ref var entity = ref DefaultArchetype.CreateEntityLocation(EntityFlags.None, out var eloc);
+        ref EntityIDOnly entityOnArchetype = ref DefaultArchetype.CreateEntityLocation(EntityFlags.None, out var eloc);
         Entity result = CreateEntityFromLocation(eloc);
-        entity.Init(result);
+        entityOnArchetype.Init(result);
         return result;
     }
 
@@ -633,7 +706,7 @@ public partial class World : IDisposable
     {
         if (count < 1)
             return;
-        Archetype archetype = Archetype.CreateOrGetExistingArchetype(entityType, this);
+        Archetype archetype = Archetype.CreateOrGetExistingArchetype(entityType, this).Archetype;
         EnsureCapacityCore(archetype, count);
     }
 
@@ -652,8 +725,7 @@ public partial class World : IDisposable
         [DebuggerHidden]
         public T GetUniform<T>()
         {
-            FrentExceptions.Throw_InvalidOperationException("Initialize the world with an IUniformProvider in order to use uniforms");
-            return default!;
+            throw new InvalidOperationException("Initialize the world with an IUniformProvider in order to use uniforms");
         }
     }
 }

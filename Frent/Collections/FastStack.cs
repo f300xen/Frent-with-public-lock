@@ -68,7 +68,7 @@ internal struct FastStack<T>(int initalComponents) : IEnumerable<T>
         //they won't get null from the stack
         ref var slot = ref _buffer.UnsafeArrayIndex(--_nextIndex)!;
         value = slot;
-        if(RuntimeHelpers.IsReferenceOrContainsReferences<T>())
+        if (RuntimeHelpers.IsReferenceOrContainsReferences<T>())
             slot = default;
         return true;
     }
@@ -102,6 +102,10 @@ internal struct FastStack<T>(int initalComponents) : IEnumerable<T>
             AsSpan().Clear();
         _nextIndex = 0;
     }
+
+#if !NETSTANDARD2_1
+    public readonly ref T GetDataReference() => ref MemoryMarshal.GetArrayDataReference(_buffer);
+#endif
 
     public void ClearWithoutClearingGCReferences() => _nextIndex = 0;
 

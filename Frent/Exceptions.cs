@@ -7,6 +7,12 @@ namespace Frent;
 internal class FrentExceptions
 {
     [DoesNotReturn]
+    public static void Throw_ArgumentException(string message)
+    {
+        throw new ArgumentException(message);
+    }
+
+    [DoesNotReturn]
     public static void Throw_InvalidOperationException(string message)
     {
         throw new InvalidOperationException(message);
@@ -47,6 +53,12 @@ internal class FrentExceptions
     public static void Throw_ArgumentOutOfRangeException(string message)
     {
         throw new ArgumentOutOfRangeException(message);
+    }
+
+    [DoesNotReturn]
+    public static void Throw_NullReferenceException()
+    {
+        throw new NullReferenceException();
     }
 }
 

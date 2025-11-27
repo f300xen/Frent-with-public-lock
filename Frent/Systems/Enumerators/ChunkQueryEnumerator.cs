@@ -7,6 +7,7 @@ namespace Frent.Systems;
 /// Enumerates all component references of the specified types for each <see cref="Entity"/> in a query in chunks.
 /// </summary>
 /// <variadic />
+[Variadic("Component<T>.IsSparseComponent", "|Component<T$>.IsSparseComponent || |false")]
 [Variadic("                Span = cur.GetComponentSpan<T>(),",
     "|                Span$ = cur.GetComponentSpan<T$>(),\n|")]
 [Variadic("<T>", "<|T$, |>")]
@@ -15,8 +16,11 @@ public ref struct ChunkQueryEnumerator<T>
     private World _world;
     private Span<Archetype> _archetypes;
     private int _archetypeIndex;
-    private ChunkQueryEnumerator(Query query)
+    internal ChunkQueryEnumerator(Query query)
     {
+        if (Component<T>.IsSparseComponent)
+            throw new NotSupportedException("Cannot enumerate chunks over sparse components!");
+
         _world = query.World;
         _world.EnterDisallowState();
         _archetypes = query.AsSpan();
@@ -53,14 +57,13 @@ public ref struct ChunkQueryEnumerator<T>
     public bool MoveNext() => ++_archetypeIndex < _archetypes.Length;
 
     /// <summary>
-    /// Proxy type for foreach syntax
+    /// A wrapper over a query for enumeration.
     /// </summary>
-    /// <param name="query">The query to wrap.</param>
-    public struct QueryEnumerable(Query query)
+    public struct Enumerable(Query q)
     {
         /// <summary>
         /// Gets the enumerator over a query.
         /// </summary>
-        public ChunkQueryEnumerator<T> GetEnumerator() => new(query);
+        public readonly ChunkQueryEnumerator<T> GetEnumerator() => new(q);
     }
 }

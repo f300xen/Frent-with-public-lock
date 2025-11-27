@@ -1,22 +1,35 @@
-﻿using Frent.Components;
+﻿using Frent.Collections;
+using Frent.Components;
 using Frent.Core;
+using Frent.Serialization;
 using Frent.Updating.Runners;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Frent.Updating;
 
 /// <summary>
 /// Used only for source generation
 /// </summary>
+/// <remarks>
+/// Should not be manually called from user code. Misuse could result in unexpected behavior.
+/// </remarks>
 /// <variadic />
 [EditorBrowsable(EditorBrowsableState.Never)]
 public static class GenerationServices
 {
     // Component Type -> Runner methods
-    internal static readonly Dictionary<Type, UpdateMethodData[]> UserGeneratedTypeMap = new();
+    internal static readonly RefDictionary<Type, UpdateMethodData[]> UserGeneratedTypeMap = new();
     internal static readonly Dictionary<Type, Delegate> TypeIniters = new();
     internal static readonly Dictionary<Type, Delegate> TypeDestroyers = new();
+    internal static readonly List<IJsonTypeInfoResolver> GeneratedJsonTypeInfoResolvers = new();
+
+    // string name for deserialization
+    internal static readonly Dictionary<string, Type> SerializableTypesMap = new();
 
     /// <inheritdoc cref="GenerationServices"/>
     public static void RegisterInit<T>()
@@ -39,23 +52,32 @@ public static class GenerationServices
     }
 
     /// <inheritdoc cref="GenerationServices"/>
+    public static void RegisterJsonTypeInfoResolver(IJsonTypeInfoResolver resolver)
+    {
+        GeneratedJsonTypeInfoResolvers.Add(resolver);
+    }
+
+    /// <inheritdoc cref="GenerationServices"/>
     public static void RegisterUpdateType(Type type, params UpdateMethodData[] methods)
     {
         if (methods.Length > 64)
             FrentExceptions.Throw_InvalidOperationException("Components cannot have more than 64 update methods.");
 
-        if (!UserGeneratedTypeMap.TryGetValue(type, out var val))
+        ref UpdateMethodData[]? data = ref UserGeneratedTypeMap.GetValueRefOrAddDefault(type, out bool exists);
+        if (!exists)
         {
-            UserGeneratedTypeMap.Add(type, methods);
-            return;
+            data = methods;
         }
-        throw new InvalidOperationException("Source generation appears to be broken. This method should not be called from user code!");
     }
 }
 
 /// <inheritdoc cref="GenerationServices"/>
-public readonly record struct UpdateMethodData(IRunner Runner, Type[] Attributes)
+public readonly struct UpdateMethodData(IRunner Runner, Type[] Attributes, TypeFilterRecord TypeFilterRecord)
 {
+    internal readonly IRunner Runner = Runner;
+    internal readonly Type[] Attributes = Attributes;
+    internal readonly TypeFilterRecord TypeFilterRecord = TypeFilterRecord;
+
     internal readonly bool AttributeIsDefined(Type attributeType)
     {
         foreach (var attr in Attributes)
@@ -65,4 +87,11 @@ public readonly record struct UpdateMethodData(IRunner Runner, Type[] Attributes
         }
         return false;
     }
+}
+
+/// <inheritdoc cref="GenerationServices"/>
+public record struct TypeFilterRecord(Type[] IncludeComponents, Type[] ExcludeComponents, Type[] IncludeTags, Type[] ExcludeTags)
+{
+    /// <inheritdoc cref="GenerationServices"/>
+    public static readonly TypeFilterRecord None = new([], [], [], []);
 }

@@ -305,23 +305,19 @@ public class CommandBuffer
 			if (record.Version == item.Entity.Version)
 			{
 				int sparseIndex = item.ComponentID.SparseIndex;
-				bool hasComponent;
+				bool isPresent;
 
-				// --- SAFETY CHECK ---
+				// --- CHECK PRESENCE ---
 				if (sparseIndex != 0)
-				{
-					hasComponent = _world.WorldSparseSetTable[sparseIndex].Has(id);
-				}
+					isPresent = _world.WorldSparseSetTable[sparseIndex].Has(id);
 				else
-				{
-					// Check raw table value to see presence bit (0x80)
-					// 0 means missing. Non-zero (e.g. 128 for index 0) means present.
-					hasComponent = record.Archetype.ComponentTagTable[item.ComponentID.RawIndex] != 0;
-				}
+					// Check Raw Table: Any non-zero value means it is present.
+					// (Index 0 is stored as 128, which is != 0)
+					isPresent = record.Archetype.ComponentTagTable[item.ComponentID.RawIndex] != 0;
 
-				if (!hasComponent)
+				if (!isPresent)
 					continue;
-				// --------------------
+				// ----------------------
 
 				_world.ComponentRemovedEvent.Invoke(concrete, item.ComponentID);
 				GenericEvent? removeEvent = record.HasFlag(EntityFlags.RemoveGenericComp) ?
@@ -348,6 +344,7 @@ public class CommandBuffer
 		while (_addComponentBuffer.TryPop(out var command))
 		{
 			Entity concrete = command.Entity.ToEntity(_world);
+			// Re-fetch record to ensure we have the latest archetype
 			ref var record = ref _world.EntityTable[concrete.EntityID];
 
 			if (record.Version == command.Entity.Version)
@@ -355,24 +352,19 @@ public class CommandBuffer
 				int sparseIndex = command.ComponentHandle.ComponentID.SparseIndex;
 				bool alreadyHas;
 
-				// --- SAFETY CHECK ---
+				// --- CHECK PRESENCE ---
 				if (sparseIndex != 0)
-				{
 					alreadyHas = _world.WorldSparseSetTable[sparseIndex].Has(concrete.EntityID);
-				}
 				else
-				{
-					// Check raw table value. 
-					// Do NOT use GetComponentIndex() as it masks out the presence bit for Index 0.
+					// Check Raw Table: Any non-zero value means it is present.
 					alreadyHas = record.Archetype.ComponentTagTable[command.ComponentHandle.ComponentID.RawIndex] != 0;
-				}
 
 				if (alreadyHas)
 				{
 					command.ComponentHandle.Dispose();
 					continue;
 				}
-				// --------------------
+				// ----------------------
 
 				ComponentStorageRecord? runner = null;
 				ComponentSparseSetBase? sparseSet = null;

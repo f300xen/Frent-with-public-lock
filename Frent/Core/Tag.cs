@@ -34,7 +34,9 @@ public class Tag
 
     internal static FastStack<Type> TagTable = FastStack<Type>.Create(4);
 
-    private static int _nextTagID = -1;
+    // This used to be -1, but it broke removing
+    // the Disable tag, so I changed it.
+    private static int _nextTagID = 0;
 
     //initalize default(TagID) to point to disable
     static Tag() => GetTagID(typeof(Disable));

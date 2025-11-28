@@ -30,6 +30,11 @@ public readonly struct QueryBuilder(World world) : IQueryBuilder
     /// </summary>
     /// <typeparam name="N">The type of component to exclude.</typeparam>
     public readonly QueryWithout<N, QueryBuilder> Without<N>() => new(World);
+    /// <summary>
+    /// Includes entities with the <see cref="Disable"/> tag in this query.
+    /// </summary>
+    public readonly QueryIncludeDisabled<QueryBuilder> IncludeDisabled() => new(World);
+
     /// <inheritdoc cref="IQueryBuilder"/>
     public readonly Query Build() => World.BuildQuery<QueryBuilder>();
 }

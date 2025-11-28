@@ -31,42 +31,53 @@ public partial class Query
     internal World World { get; init; }
     internal bool IncludeDisabled { get; init; }
 
-    internal Query(World world, ImmutableArray<Rule> rules)
-    {
-        World = world;
-        var builderSparse = ImmutableArray.CreateBuilder<Rule>();
-        var builderArch = ImmutableArray.CreateBuilder<Rule>();
-        foreach (var rule in rules)
-        {
-            if (rule.IsSparseRule)
-            {
-                HasSparseRules = true;
+	internal Query(World world, ImmutableArray<Rule> rules)
+	{
+		World = world;
+		var builderSparse = ImmutableArray.CreateBuilder<Rule>();
+		var builderArch = ImmutableArray.CreateBuilder<Rule>();
+		foreach (var rule in rules)
+		{
+			// --- FIX START ---
+			// Identify the configuration rule, set the flag, and consume it 
+			// so it doesn't pollute the runtime constraint lists.
+			if (rule == Rule.IncludeDisabledRule)
+			{
+				IncludeDisabled = true;
+				continue;
+			}
+			// --- FIX END ---
 
-                builderSparse.Add(rule);
+			if (rule.IsSparseRule)
+			{
+				HasSparseRules = true;
 
-                Debug.Assert(rule.SparseIndex != 0);
-                Debug.Assert(rule.RuleStateValue == Rule.RuleState.HasComponent ||
-                    rule.RuleStateValue == Rule.RuleState.NotComponent);
+				builderSparse.Add(rule);
 
-                ref Bitset toModify = ref rule.RuleStateValue == Rule.RuleState.HasComponent ?
-                    ref _hasSparseComponents :
-                    ref _excludeSparseComponents;
+				Debug.Assert(rule.SparseIndex != 0);
+				Debug.Assert(rule.RuleStateValue == Rule.RuleState.HasComponent ||
+					rule.RuleStateValue == Rule.RuleState.NotComponent);
 
-                toModify.Set(rule.SparseIndex);
-            }
-            else
-                builderArch.Add(rule);
-            IncludeDisabled |= rule == Rule.IncludeDisabledRule;
-        }
+				ref Bitset toModify = ref rule.RuleStateValue == Rule.RuleState.HasComponent ?
+					ref _hasSparseComponents :
+					ref _excludeSparseComponents;
 
-        _sparseRules = builderSparse.ToImmutable();
-        _archetypicalRules = builderArch.ToImmutable();
+				toModify.Set(rule.SparseIndex);
+			}
+			else
+			{
+				builderArch.Add(rule);
+			}
+		}
 
-        HasSparseExclusions = !_excludeSparseComponents.IsDefault;
-    }
+		_sparseRules = builderSparse.ToImmutable();
+		_archetypicalRules = builderArch.ToImmutable();
+
+		HasSparseExclusions = !_excludeSparseComponents.IsDefault;
+	}
 
 #if !NETSTANDARD
-    internal ref Archetype GetArchetypeDataReference() => ref _archetypes.GetDataReference();
+	internal ref Archetype GetArchetypeDataReference() => ref _archetypes.GetDataReference();
 #endif
 
     internal void TryAttachArchetype(Archetype archetype)

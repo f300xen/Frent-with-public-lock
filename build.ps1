@@ -1,63 +1,49 @@
-# normal package
+# Stop the script immediately if any command returns an error
+$ErrorActionPreference = "Stop"
 
-# build strategy
-# delete bin -> build generator -> copy generator -> build frent -> push
-# detete bin -> build generator -> copy generator -> tmp csproj -> build frent.unity -> delete tmp csproj -> push
+# Define which configurations to build
+$configs = @("Debug", "Release")
 
-echo "Building Generator"
+foreach ($config in $configs) {
+    Write-Host "`n==========================================" -ForegroundColor Cyan
+    Write-Host " STARTING BUILD: $config" -ForegroundColor Cyan
+    Write-Host "=========================================="
 
-rm Frent\bin\Release\* -Recurse
+    # 1. Clean previous build for this config
+    $targetBinDir = ".\Frent\bin\$config"
+    
+    Write-Host "Cleaning $targetBinDir..." -ForegroundColor Gray
+    if (Test-Path $targetBinDir) {
+        Remove-Item -Path $targetBinDir -Recurse -Force
+    }
+    # Create the directory immediately so we can copy the generator into it
+    New-Item -ItemType Directory -Force -Path $targetBinDir | Out-Null
 
-dotnet build -c Release Frent.Generator\Frent.Generator.csproj
+    # 2. Build the Source Generator
+    Write-Host "Building Generator..." -ForegroundColor Yellow
+    dotnet build ".\Frent.Generator\Frent.Generator.csproj" -c $config
 
-Copy-Item -Path ".\Frent.Generator\bin\Release\netstandard2.0\Frent.Generator.dll" -Destination ".\Frent\bin\Release\"
+    # 3. Copy Generator DLL
+    # The original script copied this to the main project bin folder manually.
+    # We replicate this ensuring we grab the netstandard2.0 output.
+    $genSourcePath = ".\Frent.Generator\bin\$config\netstandard2.0\Frent.Generator.dll"
+    
+    if (Test-Path $genSourcePath) {
+        Write-Host "Copying Generator to Frent output..." -ForegroundColor Gray
+        Copy-Item -Path $genSourcePath -Destination $targetBinDir
+    } else {
+        Write-Warning "Could not find Generator DLL at $genSourcePath"
+    }
 
-echo "Building Frent"
+    # 4. Build Frent Core
+    Write-Host "Building Frent..." -ForegroundColor Yellow
+    # We don't use /p:Publish=true here as that is usually for NuGet packing.
+    # Standard build is sufficient for local references.
+    dotnet build ".\Frent\Frent.csproj" -c $config
 
-dotnet build -c Release Frent\Frent.csproj /p:Publish=true
+    Write-Host "Success: $config build complete." -ForegroundColor Green
+}
 
-$package = Get-ChildItem -Path ".\Frent\bin\Release" -Filter "*.nupkg" | Select-Object -First 1
-
-echo "Pushing package $package"
-
-pause
-
-dotnet nuget push ".\Frent\bin\Release\$package" --api-key $Env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json
-
-pause
-
-clear
-
-# unity package
-
-rm Frent\bin\Release\* -Recurse
-
-echo "Building Unity Generator"
-
-dotnet build -c Release Frent.Generator\Frent.Generator.csproj /p:Unity="#UNITY"
-
-Copy-Item -Path ".\Frent.Generator\bin\Release\netstandard2.0\Frent.Generator.dll" -Destination ".\Frent\bin\Release\"
-
-echo "Building Frent.Unity"
-
-# copy tmp csproj
-Copy-Item -Path ".\Frent\Frent.csproj" -Destination ".\Frent\Frent.Unity.csproj"
-
-dotnet build -c Release Frent\Frent.Unity.csproj /p:Publish=true
-
-# cleanup
-rm ".\Frent\Frent.Unity.csproj"
-
-$package = Get-ChildItem -Path ".\Frent\bin\Release" -Filter "*.nupkg" | Select-Object -First 1
-
-echo "Pushing package $package"
-
-pause
-
-dotnet nuget push ".\Frent\bin\Release\$package" --api-key $Env:NUGET_API_KEY --source https://api.nuget.org/v3/index.json
-
-pause
-
-echo "DONE! Don't forget to update docs!!!!"
-
-pause
+Write-Host "`nAll builds finished." -ForegroundColor Green
+# Optional: Open the folder to show results
+# Invoke-Item ".\Frent\bin\"

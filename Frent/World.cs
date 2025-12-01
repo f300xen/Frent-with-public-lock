@@ -615,7 +615,7 @@ public partial class World : IDisposable
             int sparseIndex = sparseComponentIndicies[i];
             if (sparseIndex == 0)
             {
-                archetypes.Archetype.GetComponentStorage(componentHandles[i].ComponentID)
+                inserted.GetComponentStorage(componentHandles[i].ComponentID)
                     .SetAt(null, componentHandles[i], eloc.Index);
             }
             else
@@ -634,7 +634,7 @@ public partial class World : IDisposable
             int sparseIndex = sparseComponentIndicies[i];
             if (sparseIndex == 0)
             {
-                archetypes.Archetype.GetComponentStorage(componentHandles[i].ComponentID)
+                inserted.GetComponentStorage(componentHandles[i].ComponentID)
                     .CallIniter(concreteEntity, eloc.Index);
             }
             else

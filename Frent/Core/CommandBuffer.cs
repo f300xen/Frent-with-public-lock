@@ -343,7 +343,7 @@ public class CommandBuffer
 			if (record.Version == command.Entity.Version)
 			{
 				if (RedundantCommandChecks.AlreadyHasComponent
-					(_world, concrete.EntityID, record.Archetype, 
+					(_world, concrete.EntityID, record.Archetype,
 					command.ComponentHandle.ComponentID))
 				{
 					command.ComponentHandle.Dispose();
@@ -391,6 +391,7 @@ public class CommandBuffer
 
 				_world.ComponentAddedEvent.Invoke(concrete, command.ComponentHandle.ComponentID);
 			}
+			else command.ComponentHandle.Dispose();
 		}
 
 		while (_tagEntityBuffer.TryPop(out var command))
